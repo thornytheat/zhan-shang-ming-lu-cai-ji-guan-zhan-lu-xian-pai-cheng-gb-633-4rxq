@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% import "base.html" as ui %}
+{% block content %}
+{% if not payload %}
+<div class="panel">
+  <div class="panel-head"><span class="panel-title">现场分工</span></div>
+  <div class="panel-body">
+    <p class="empty">还没有分工。先跑一次采集，再点下面的「排分工」。</p>
+    <div class="row">
+      <button id="duty-run" type="button">排分工</button>
+      <span class="grow note" id="duty-msg"></span>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="totals" data-duty-id="{{ summary.duty_id }}">
+  <span>分工 <b>{{ summary.duty_id }}</b></span>
+  <span>版本 <b>v{{ summary.version }}</b></span>
+  <span>预约 <b>{{ summary.appointments }}</b></span>
+  <span>原对接 <b>{{ summary.owner }}</b></span>
+  <span>待接管 <b>{{ summary.takeover_pending }}</b></span>
+  <span>已完成 <b>{{ summary.done }}</b></span>
+  <span>无人接管 <b>{{ summary.uncovered }}</b></span>
+  <span>接管记录 <b>{{ summary.takeovers }}</b></span>
+  <span>三账 <b>{{ '平' if summary.balanced else '差' }}</b></span>
+  {% if summary.resume_of %}<span class="unit">续跑自 {{ summary.resume_of }}</span>{% endif %}
+</div>
+
+<form class="row" method="get" action="/duty">
+  <div class="field">
+    <label for="person">看谁的</label>
+    <select id="person" name="person">
+      {% for key, label in person_options %}
+      <option value="{{ key }}" {% if person == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit">查看</button>
+  <a class="note" href="/duty">全部</a>
+  <span class="grow"></span>
+  <a class="note" href="/api/duty/itinerary.csv?duty_id={{ summary.duty_id }}">个人行程 CSV</a>
+</form>
+
+<div class="row">
+  <button id="duty-run" type="button">整批重排</button>
+  <button id="duty-resume" type="button" class="ghost">从断点续跑</button>
+  <span class="grow note" id="duty-msg"></span>
+</div>
+
+{{ ui.stagebar(stages) }}
+
+<div class="split">
+  <div class="panel">
+    <div class="panel-head"><span class="panel-title">在场窗口</span>
+      <span class="panel-sub">本地时刻，左闭右开</span></div>
+    <div class="panel-body flush">
+      <table class="grid" id="grid-roster">
+        {{ ui.gridhead(["工号", "同事", "第 1 天", "第 2 天", "备注"], evidence=False) }}
+        <tbody>
+          {% for r in roster_rows %}
+          <tr>
+            <td class="cell mono" tabindex="0">{{ r.id }}</td>
+            <td class="cell" tabindex="0">{{ r.name }}</td>
+            <td class="cell mono" tabindex="0">{{ r.day1 }}</td>
+            <td class="cell mono" tabindex="0">{{ r.day2 }}</td>
+            <td class="cell" tabindex="0">{{ r.note or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><span class="panel-title">对账</span>
+      <span class="panel-sub">{{ '平' if reconciliation and reconciliation.all_balanced else '有差异' }}</span></div>
+    <div class="panel-body flush">
+      <table class="grid" id="grid-duty-reconcile">
+        {{ ui.gridhead(["账", "左", "右", "结论"], evidence=False) }}
+        <tbody>
+          {% for a in (reconciliation.accounts if reconciliation else []) %}
+          <tr>
+            <td class="cell" tabindex="0">{{ a.account }}</td>
+            <td class="cell num" tabindex="0" title="{{ a.left_label }}">{{ a.left }}</td>
+            <td class="cell mono" tabindex="0">{{ a.right }}</td>
+            <td class="cell" tabindex="0"><span class="tag {{ 'ok' if a.balanced else 'bad' }}">{{ '平' if a.balanced else '差' }}</span></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="empty">还没有对账结果。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% if reconciliation and reconciliation.overlaps %}
+<div class="panel">
+  <div class="panel-head"><span class="panel-title">行程重叠</span>
+    <span class="panel-sub">{{ reconciliation.overlaps|length }} 处</span></div>
+  <div class="panel-body flush">
+    <table class="grid">
+      {{ ui.gridhead(["同事", "天", "前一场", "后一场", "说明"], evidence=False) }}
+      <tbody>
+        {% for o in reconciliation.overlaps %}
+        <tr class="is-bad">
+          <td class="cell" tabindex="0">{{ o.person }}</td>
+          <td class="cell num" tabindex="0">{{ o.day }}</td>
+          <td class="cell mono" tabindex="0">{{ o.left }}</td>
+          <td class="cell mono" tabindex="0">{{ o.right }}</td>
+          <td class="cell wide" tabindex="0">{{ o.detail }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% for block in people_blocks %}
+<div class="panel">
+  <div class="panel-head"><span class="panel-title">{{ block.person_name }} 的个人行程</span>
+    <span class="panel-sub">{{ block.person_id }}</span></div>
+  <div class="panel-body flush">
+    {% for day in block.days %}
+    <table class="grid" id="grid-duty-{{ block.person_id }}-{{ day.day }}">
+      {{ ui.gridhead(["天", "序", "时段", "展商", "馆", "展位号", "步行(米)", "角色", "原对接人"], evidence=False) }}
+      <tbody>
+        {% for r in day.rows %}
+        <tr>
+          <td class="cell num" tabindex="0">{{ r.day }}</td>
+          <td class="cell num" tabindex="0">{{ r.seq }}</td>
+          <td class="cell mono" tabindex="0">{{ r.slot }}</td>
+          <td class="cell" tabindex="0" title="{{ r.name }}">{{ r.name|short(22) }}</td>
+          <td class="cell mono" tabindex="0">{{ r.hall }}</td>
+          <td class="cell mono" tabindex="0">{{ r.booth_code or '—' }}</td>
+          <td class="cell num" tabindex="0">{{ r.walk_m|meter }}</td>
+          <td class="cell" tabindex="0"><span class="tag {{ 'ok' if r.role == 'OWNER' else ('warn' if r.role in ('TAKEOVER', 'DONE') else 'mute') }}">{{ r.role_label }}</span></td>
+          <td class="cell" tabindex="0">{{ r.owner_name }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="empty">这一天没有安排。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">这一版没有分到行程。</p>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<div class="panel"><div class="panel-body"><p class="empty">这一版没有个人行程。</p></div></div>
+{% endfor %}
+
+<div class="gridwrap tall">
+  <table class="grid" id="grid-duty-appointments">
+    {{ ui.gridhead(["天", "时段", "展商", "馆", "展位号", "原对接人", "承接人", "角色", "原因码", "说明"]) }}
+    <tbody>
+      {% for r in appointment_rows %}
+      <tr class="{% if r.role == 'UNCOVERED' %}is-bad{% endif %}">
+        <td class="cell num" tabindex="0">{{ r.day }}</td>
+        <td class="cell mono" tabindex="0">{{ r.slot }}</td>
+        <td class="cell" tabindex="0" title="{{ r.name }}">{{ r.name|short(20) }}</td>
+        <td class="cell mono" tabindex="0">{{ r.hall }}</td>
+        <td class="cell mono" tabindex="0">{{ r.booth_code or '—' }}</td>
+        <td class="cell" tabindex="0">{{ r.owner_name }}</td>
+        <td class="cell" tabindex="0">{{ r.assignee }}</td>
+        <td class="cell" tabindex="0"><span class="tag {{ 'ok' if r.role == 'OWNER' else ('warn' if r.role in ('TAKEOVER', 'DONE') else 'bad') }}">{{ r.role_label }}</span></td>
+        <td class="cell code" tabindex="0">{{ r.code or '—' }}</td>
+        <td class="cell wide" tabindex="0" title="{{ r.note }}">{{ r.note|short(30) }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="11" class="empty">还没有预约。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="split">
+  <div class="panel">
+    <div class="panel-head"><span class="panel-title">接管记录</span>
+      <span class="panel-sub">{{ takeover_rows|length }} 条</span></div>
+    <div class="panel-body flush">
+      <table class="grid" id="grid-duty-takeovers">
+        {{ ui.gridhead(["天", "时段", "展商", "原对接", "接管人", "原因码", "原因"], evidence=False) }}
+        <tbody>
+          {% for r in takeover_rows %}
+          <tr>
+            <td class="cell num" tabindex="0">{{ r.day }}</td>
+            <td class="cell mono" tabindex="0">{{ r.slot }}</td>
+            <td class="cell" tabindex="0" title="{{ r.name }}">{{ r.name|short(18) }}</td>
+            <td class="cell" tabindex="0">{{ r.from_person }}</td>
+            <td class="cell" tabindex="0">{{ r.to_person }}</td>
+            <td class="cell code" tabindex="0">{{ r.reason_code }}</td>
+            <td class="cell wide" tabindex="0" title="{{ r.reason }}">{{ r.reason|short(34) }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="8" class="empty">这一版没有接管。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><span class="panel-title">现场完成记录</span>
+      <span class="panel-sub">{{ record_rows|length }} 条</span></div>
+    <div class="panel-body flush">
+      <table class="grid" id="grid-duty-records">
+        {{ ui.gridhead(["记录号", "展位号/名称", "完成人", "完成时间", "状态", "备注"], evidence=False) }}
+        <tbody>
+          {% for r in record_rows %}
+          <tr class="{% if r.code != '—' %}is-bad{% endif %}">
+            <td class="cell mono" tabindex="0">{{ r.record_id }}</td>
+            <td class="cell" tabindex="0" title="{{ r.name }}">{{ r.ref|short(18) }}</td>
+            <td class="cell" tabindex="0">{{ r.person }}</td>
+            <td class="cell mono" tabindex="0">{{ r.at }}</td>
+            <td class="cell code" tabindex="0">{{ r.code }}</td>
+            <td class="cell" tabindex="0">{{ r.note|short(18) }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="empty">没有现场完成记录。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% if duty_versions|length > 1 %}
+<div class="panel">
+  <div class="panel-head"><span class="panel-title">版本链</span>
+    <span class="panel-sub">{{ duty_versions|length }} 版</span></div>
+  <div class="panel-body flush">
+    <table class="grid">
+      {{ ui.gridhead(["版本", "分工号", "状态", "续跑自"], evidence=False) }}
+      <tbody>
+        {% for v in duty_versions %}
+        <tr>
+          <td class="cell num" tabindex="0">v{{ v.version }}</td>
+          <td class="cell mono" tabindex="0"><a href="/duty?duty_id={{ v.duty_id }}">{{ v.duty_id }}</a></td>
+          <td class="cell" tabindex="0">{{ v.status }}</td>
+          <td class="cell mono" tabindex="0">{{ v.resume_of or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

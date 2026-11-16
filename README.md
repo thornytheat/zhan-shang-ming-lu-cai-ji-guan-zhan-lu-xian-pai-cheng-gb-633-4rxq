@@ -15,6 +15,7 @@
 | M5 批次版本 | 批次、阶段、版本链、续跑 | `GET /api/batches` `GET /batches` | 批次键幂等、版本递增、陈旧提交拒绝 |
 | M6 行程导出 | 行程单 / 证据 / 分段 / 清单 | `GET /api/export` `GET /export` | Decimal 序列化、证据带行号与原因码 |
 | M7 备选方案 | 三套取舍各排一次，切方案看损失 | `GET /api/alternate` `GET /alternate` | 权重守恒、跨馆上限、换乘并入到站、方向化距离 |
+| M8 现场分工 | 五人分头看展，按现场完成记录续排 | `POST /api/duty` `GET /api/duty` `GET /duty` | 原对接连续、晚到接管、完成记录即事实、整批原子 |
 
 ## 核心规则
 
@@ -26,6 +27,14 @@
 5. 备选方案：同一批候选排三套（主方案 / 减站换权重 / 限跨馆），
    权重账「排入 + 未排入 = 候选权重合计」三套各自成立。
 6. 跨馆换乘 4 分钟计入到站；二层 A2→B2 是单向扶梯，反向多 60 米，距离按方向相加。
+7. 现场分工：五人各有每天的在场窗口，预约先给原对接人；原对接人名单外、当天不在、
+   晚到、提前离馆或行程赶不上时，由窗口盖住该时段且行程接得上的同事接管剩余场次，
+   预约本身不作废；没人接得下记 `D_UNCOVERED`。
+8. 现场完成记录是事实：已完成的预约不再重排，只按记录定人；续跑时上一版完成的场次
+   原样带过来，版本 +1（`resume_of`），提交旧版本按 `D_STALE_REJECTED` 409 拒绝。
+9. 新版分工整批原子生效：新分工号一次事务写入预约、个人行程、接管与完成记录，
+   写入失败整体回滚，旧版三张表一条不动。对账四本：预约 = 原对接 + 待接管 + 已完成
+   + 无人接管；行程 = 已落人预约；接管 = 待接管 + 已由他人完成；完成记录逐条归类。
 
 字段与计算方式见 `docs/DATA-DICTIONARY.md`，陷阱与流水线义务见 `docs/DEPTH.md`。
 
@@ -49,12 +58,15 @@ curl -s 'http://127.0.0.1:18202/api/alternate?plan=C&cap=3' | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:18202/api/crawl \
   -H 'Content-Type: application/json' -d '{"mode":"delta"}'   # 400
 curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:18202/api/alternate?cap=99'   # 400
+curl -s -X POST http://127.0.0.1:18202/api/duty -H 'Content-Type: application/json' -d '{}'
+curl -s http://127.0.0.1:18202/api/duty | head -c 400
 ```
 
 ## 页面
 
 `/` 名录采信 · `/exhibitors` 展商网格 · `/conflicts` 冲突隔离 ·
-`/plan` 路线排程 · `/batches` 批次版本 · `/export` 行程单 · `/alternate` 备选方案
+`/plan` 路线排程 · `/batches` 批次版本 · `/export` 行程单 · `/alternate` 备选方案 ·
+`/duty` 现场分工
 
 ## 测试
 
@@ -66,11 +78,11 @@ pytest -q
 
 ```
 app/{main,config,errors,reasons,manifest,store,web}.py
-app/modules/m1_catalog/ … m7_alternate/
-app/templates/  base.html + 7 页
-app/static/     theme.css layout.css components.css app.js grid.js table.js
+app/modules/m1_catalog/ … m8_duty/
+app/templates/  base.html + 8 页
+app/static/     theme.css layout.css components.css app.js grid.js table.js duty.js
 docs/           DEPTH.md DATA-DICTIONARY.md
 tests/          conftest.py + 每模块 1 个测试文件 + test_e2e.py + fixtures/
-sample_site/    离线样例站（名录 5 页 + 议程 + 导出件）
+sample_site/    离线样例站（名录 5 页 + 议程 + 导出件 + 现场完成记录）
 sample_data/    样例说明与字段摘录
 ```

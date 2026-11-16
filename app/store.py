@@ -75,6 +75,48 @@ CREATE TABLE IF NOT EXISTS totals (
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS duty_plans (
+    duty_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, duty_key TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL,
+    created_at TEXT NOT NULL, finished_at TEXT, resume_of TEXT,
+    params_json TEXT NOT NULL DEFAULT '{}', note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_duty_key ON duty_plans(duty_key, version);
+CREATE TABLE IF NOT EXISTS duty_appointments (
+    duty_id TEXT NOT NULL, appointment_id TEXT NOT NULL, ref TEXT NOT NULL,
+    name TEXT NOT NULL, hall TEXT NOT NULL, booth_code TEXT,
+    day INTEGER NOT NULL, slot_start_utc TEXT NOT NULL, slot_end_utc TEXT NOT NULL,
+    dwell_min INTEGER NOT NULL, owner_id TEXT NOT NULL DEFAULT '',
+    owner_name TEXT NOT NULL, assignee_id TEXT NOT NULL DEFAULT '',
+    assignee_name TEXT NOT NULL DEFAULT '', role TEXT NOT NULL,
+    state TEXT NOT NULL, code TEXT, record_id TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    UNIQUE (duty_id, appointment_id)
+);
+CREATE TABLE IF NOT EXISTS duty_itinerary (
+    duty_id TEXT NOT NULL, person_id TEXT NOT NULL, person_name TEXT NOT NULL,
+    day INTEGER NOT NULL, seq INTEGER NOT NULL, appointment_id TEXT NOT NULL,
+    ref TEXT NOT NULL, name TEXT NOT NULL, hall TEXT NOT NULL,
+    booth_code TEXT, arrival_utc TEXT NOT NULL, depart_utc TEXT NOT NULL,
+    dwell_min INTEGER NOT NULL, walk_m TEXT NOT NULL, walk_min INTEGER NOT NULL,
+    role TEXT NOT NULL, owner_name TEXT NOT NULL, state TEXT NOT NULL,
+    record_id TEXT, note TEXT NOT NULL DEFAULT '',
+    UNIQUE (duty_id, appointment_id)
+);
+CREATE TABLE IF NOT EXISTS duty_takeovers (
+    duty_id TEXT NOT NULL, takeover_id TEXT NOT NULL, appointment_id TEXT NOT NULL,
+    ref TEXT NOT NULL, name TEXT NOT NULL, day INTEGER NOT NULL,
+    from_person TEXT NOT NULL, to_person TEXT NOT NULL,
+    reason_code TEXT NOT NULL, reason TEXT NOT NULL,
+    slot_start_utc TEXT NOT NULL, slot_end_utc TEXT NOT NULL,
+    source TEXT NOT NULL, record_id TEXT, note TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS duty_records (
+    duty_id TEXT NOT NULL, record_id TEXT NOT NULL, ref TEXT NOT NULL,
+    person_name TEXT NOT NULL, completed_at TEXT NOT NULL,
+    appointment_id TEXT, status TEXT NOT NULL, code TEXT,
+    note TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -339,6 +381,179 @@ class Store:
         with self.connect() as conn:
             return [dict(r) for r in conn.execute(sql, args).fetchall()]
 
+    # ---------- M8 现场分工 ----------
+    def save_duty(self, *, duty: dict, appointments: list[dict],
+                  itinerary: list[dict], takeovers: list[dict],
+                  records: list[dict]) -> None:
+        """整批写入一份分工：同一事务内先删后插，只有本 duty_id 的行会被替换。
+
+        新版本用新的 duty_id，所以任一环节抛错回滚后，旧版本的预约、行程、
+        接管记录原样保留，页面继续看到上一版安排。
+        """
+        did = duty["duty_id"]
+        with self.connect() as conn:
+            for table in ("duty_appointments", "duty_itinerary",
+                          "duty_takeovers", "duty_records"):
+                conn.execute(f"DELETE FROM {table} WHERE duty_id=?", (did,))
+            conn.execute("DELETE FROM duty_plans WHERE duty_id=?", (did,))
+            for item in appointments:
+                conn.execute(
+                    """INSERT INTO duty_appointments (duty_id, appointment_id, ref,
+                        name, hall, booth_code, day, slot_start_utc, slot_end_utc,
+                        dwell_min, owner_id, owner_name, assignee_id, assignee_name,
+                        role, state, code, record_id, note)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (did, item["appointment_id"], item["ref"], item["name"],
+                     item["hall"], item.get("booth_code"), item["day"],
+                     item["slot_start_utc"], item["slot_end_utc"],
+                     item["dwell_min"], item.get("owner_id", ""),
+                     item["owner_name"], item.get("assignee_id", ""),
+                     item.get("assignee_name", ""), item["role"], item["state"],
+                     item.get("code"), item.get("record_id"),
+                     item.get("note", "")))
+            for item in itinerary:
+                conn.execute(
+                    """INSERT INTO duty_itinerary (duty_id, person_id, person_name,
+                        day, seq, appointment_id, ref, name, hall, booth_code,
+                        arrival_utc, depart_utc, dwell_min, walk_m, walk_min,
+                        role, owner_name, state, record_id, note)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (did, item["person_id"], item["person_name"], item["day"],
+                     item["seq"], item["appointment_id"], item["ref"],
+                     item["name"], item["hall"], item.get("booth_code"),
+                     item["arrival_utc"], item["depart_utc"], item["dwell_min"],
+                     str(item["walk_m"]), item["walk_min"], item["role"],
+                     item["owner_name"], item["state"], item.get("record_id"),
+                     item.get("note", "")))
+            for item in takeovers:
+                conn.execute(
+                    """INSERT INTO duty_takeovers (duty_id, takeover_id,
+                        appointment_id, ref, name, day, from_person, to_person,
+                        reason_code, reason, slot_start_utc, slot_end_utc, source,
+                        record_id, note)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (did, item["takeover_id"], item["appointment_id"], item["ref"],
+                     item["name"], item["day"], item["from_person"],
+                     item["to_person"], item["reason_code"], item["reason"],
+                     item["slot_start_utc"], item["slot_end_utc"],
+                     item["source"], item.get("record_id"),
+                     item.get("note", "")))
+            for item in records:
+                conn.execute(
+                    """INSERT INTO duty_records (duty_id, record_id, ref,
+                        person_name, completed_at, appointment_id, status, code,
+                        note)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (did, item["record_id"], item["ref"], item["person_name"],
+                     item["completed_at"], item.get("appointment_id"),
+                     item["status"], item.get("code"), item.get("note", "")))
+            conn.execute(
+                """INSERT INTO duty_plans (duty_id, batch_id, duty_key, version,
+                        status, created_at, finished_at, resume_of, params_json,
+                        note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (did, duty["batch_id"], duty["duty_key"], duty.get("version", 1),
+                 duty["status"], duty["created_at"], duty.get("finished_at"),
+                 duty.get("resume_of"),
+                 json.dumps(duty.get("params", {}), ensure_ascii=False),
+                 duty.get("note", "")))
+
+    def get_duty(self, duty_id: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM duty_plans WHERE duty_id=?",
+                               (duty_id,)).fetchone()
+        return dict(row) if row else None
+
+    def latest_duty(self, status: str = "done") -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM duty_plans WHERE status=? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1", (status,)).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT * FROM duty_plans ORDER BY created_at DESC, rowid DESC "
+                    "LIMIT 1").fetchone()
+        return dict(row) if row else None
+
+    def list_duties(self, limit: int = 30) -> list[dict]:
+        return self._all(
+            "SELECT * FROM duty_plans ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (limit,))
+
+    def find_done_duty_by_key(self, duty_key: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM duty_plans WHERE duty_key=? AND status='done' "
+                "ORDER BY version LIMIT 1", (duty_key,)).fetchone()
+        return dict(row) if row else None
+
+    def next_duty_version(self, duty_key: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(version) AS v FROM duty_plans WHERE duty_key=?",
+                (duty_key,)).fetchone()
+        return int(row["v"] or 0) + 1
+
+    def duty_versions(self, duty_key: str) -> list[dict]:
+        return self._all(
+            "SELECT duty_id, duty_key, version, status, created_at, finished_at, "
+            "resume_of, note FROM duty_plans WHERE duty_key=? ORDER BY version",
+            (duty_key,))
+
+    def load_duty_appointments(self, duty_id: str) -> list[dict]:
+        rows = self._all(
+            "SELECT * FROM duty_appointments WHERE duty_id=? "
+            "ORDER BY day, slot_start_utc, appointment_id", (duty_id,))
+        for row in rows:
+            row["slot_start"] = _local_minutes(row["slot_start_utc"])
+            row["slot_end"] = _local_minutes(row["slot_end_utc"])
+        return rows
+
+    def load_duty_itinerary(self, duty_id: str, person_id: str | None = None) -> list[dict]:
+        if person_id:
+            rows = self._all(
+                "SELECT * FROM duty_itinerary WHERE duty_id=? AND person_id=? "
+                "ORDER BY day, seq", (duty_id, person_id))
+        else:
+            rows = self._all(
+                "SELECT * FROM duty_itinerary WHERE duty_id=? ORDER BY person_id, day, seq",
+                (duty_id,))
+        for row in rows:
+            row["walk_m"] = Decimal(row["walk_m"])
+            row["arrival_min"] = _local_minutes(row["arrival_utc"])
+            row["depart_min"] = _local_minutes(row["depart_utc"])
+        return rows
+
+    def load_duty_takeovers(self, duty_id: str) -> list[dict]:
+        rows = self._all(
+            "SELECT * FROM duty_takeovers WHERE duty_id=? "
+            "ORDER BY day, slot_start_utc, appointment_id", (duty_id,))
+        for row in rows:
+            row["slot_start"] = _local_minutes(row["slot_start_utc"])
+            row["slot_end"] = _local_minutes(row["slot_end_utc"])
+        return rows
+
+    def load_duty_records(self, duty_id: str) -> list[dict]:
+        return self._all(
+            "SELECT * FROM duty_records WHERE duty_id=? ORDER BY completed_at, record_id",
+            (duty_id,))
+
 
 def _s(value):
     return None if value is None else str(value)
+
+
+def _local_minutes(value: str | None) -> int | None:
+    """UTC ISO 时刻 → 当天本地分钟；坏值返回 None，不抛。"""
+    import datetime as dt
+
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    local = parsed.astimezone(dt.timezone(dt.timedelta(hours=8)))
+    return local.hour * 60 + local.minute

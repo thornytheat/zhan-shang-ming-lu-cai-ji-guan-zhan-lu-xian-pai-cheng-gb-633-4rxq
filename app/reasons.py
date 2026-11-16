@@ -160,6 +160,31 @@ REASONS = {
     "M7_NO_UNPLACED": _r(
         "M7_NO_UNPLACED", INFO, "alternate",
         "主方案没有可争取的候选，备选与主方案一致", "候选全部排入或被前置规则隔离"),
+    # ---- M8 现场分工 ----
+    "D_OWNER_KEPT": _r(
+        "D_OWNER_KEPT", INFO, "duty",
+        "原对接人在场，按原对接连续完成", "同一展商的连续场次不换人，避免重复到站"),
+    "D_LATE_TAKEOVER": _r(
+        "D_LATE_TAKEOVER", WARN, "duty",
+        "原对接人赶不上已约时段，已由能及时到场的同事接管", "晚到 / 离馆 / 行程冲突，接管原因逐条记录"),
+    "D_UNCOVERED": _r(
+        "D_UNCOVERED", ERROR, "duty",
+        "没有任何同事能覆盖该预约时段", "预约不自动作废，保留原状等人工安排"),
+    "D_DUPLICATE_RECORD": _r(
+        "D_DUPLICATE_RECORD", WARN, "duty",
+        "同一场次出现多条完成记录，取最早一条", "重复上报不影响分工，另一条留证"),
+    "D_UNKNOWN_REF": _r(
+        "D_UNKNOWN_REF", ERROR, "duty",
+        "完成记录引用的展商不在本批次名录内", "核对编号，该条记录不参与分工"),
+    "D_RESUMED": _r(
+        "D_RESUMED", INFO, "duty",
+        "沿用上一版已处理场次，从断点继续排", "已完成场次不再重排，只排剩余场次"),
+    "D_STALE_REJECTED": _r(
+        "D_STALE_REJECTED", WARN, "duty",
+        "提交的版本早于当前最新版本，已拒绝", "版本号只能前进，旧安排不被覆盖"),
+    "D_NO_BATCH": _r(
+        "D_NO_BATCH", ERROR, "duty",
+        "没有可用的批次或批次里没有预约", "先跑一次采集与排程再排分工"),
 }
 
 

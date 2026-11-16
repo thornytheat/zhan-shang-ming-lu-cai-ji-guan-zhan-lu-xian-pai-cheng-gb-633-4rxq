@@ -1,6 +1,6 @@
 # 深度登记 boothplan
 
-- 规模：中型（7 个功能模块，页面 7 个，测试见 tests/）
+- 规模：中型（8 个功能模块，页面 8 个，测试见 tests/）
 - 核心规则：展位号解析成 馆-排-位 与平面坐标（跨馆加 150 米），论坛时间窗左闭右开，
   固定窗先落位、展商按优先级贪心插入最佳位置，再用带窗 2-opt 降低总步行。
   M7 在同一批候选上按三套取舍各排一次，换乘分钟计入到站，距离按方向逐段相加。
@@ -18,6 +18,7 @@
 | M5 批次版本 | 查批次、阶段计数、版本链与续跑能力 | GET /api/batches · GET /batches | `app/modules/m5_batches/service.py` `app/modules/m5_batches/history.py` | `tests/test_batches.py` |
 | M6 行程导出 | 导出行程单、证据、分段与运行清单 | GET /api/export · GET /export | `app/modules/m6_export/csv_out.py` `app/modules/m6_export/itinerary.py` `app/modules/m6_export/service.py` | `tests/test_export.py` |
 | M7 备选方案 | 三套取舍各排一次，切方案看损失与换乘 | GET /api/alternate · GET /alternate | `app/modules/m7_alternate/handler.py` `app/modules/m7_alternate/service.py` `app/modules/m7_alternate/directed.py` `app/modules/m7_alternate/limits.py` | `tests/test_m7_alternate.py` |
+| M8 现场分工 | 五人各有在场窗口，原对接连续、晚到接管、按完成记录续跑 | POST /api/duty · GET /api/duty · GET /duty | `app/modules/m8_duty/handler.py` `app/modules/m8_duty/service.py` `app/modules/m8_duty/planner.py` `app/modules/m8_duty/roster.py` `app/modules/m8_duty/records.py` | `tests/test_duty.py` |
 
 ## 陷阱登记
 
@@ -37,6 +38,11 @@
 | TRAP-23 | 09:30-10:30 与 10:30-11:15 相邻场次 | 两端都算，重复计入冲突 | 左闭右开 `[start, end)` | `app/modules/m3_windows/windows.py:112` | `tests/test_windows.py::test_half_open_endpoints_touch_not_overlap` |
 | TRAP-27 | 时间放得下，但当天跨馆已到上限 | 报成 P_NO_SLOT（当天排满），提高其他时段也没用 | 上限与时间分开判：先看时间能不能放，再看跨馆次数，超限给 M7_HALL_CAP | `app/modules/m7_alternate/service.py` | `tests/test_m7_alternate.py::test_hall_cap_reported_not_no_slot` |
 | TRAP-28 | 二层扶梯单向，A2→B2 比 B2→A2 少 60 米 | 按对称距离算，2-opt 增量公式把反向也算成同样的米数 | 距离函数带方向，逐段相加；全馆两两核验，不相等的对单独列出 | `app/modules/m7_alternate/directed.py` | `tests/test_m7_alternate.py::test_one_way_bridge_detected_as_asymmetric` |
+| TRAP-31 | 原对接人 14:30 才到馆，09:24 已约的场次 | 整条线换给一个人重新插，或直接把预约作废 | 只把这一个时段交给窗口盖住它、行程接得上的同事；预约时段不动、不作废，接管逐条留证 | `app/modules/m8_duty/planner.py` | `tests/test_duty.py::test_late_owner_hands_over_slot_to_someone_who_can_arrive` |
+| TRAP-32 | 五人同时在场，同一时段多单抢同一个人 | 按行序先来先得，晚到的接管单把人排成两处 | 先落原对接人的单，再按「接管次数 → 到站时刻 → 工号」定人，结果与输入行序无关 | `app/modules/m8_duty/planner.py` | `tests/test_duty.py::test_no_two_appointments_overlap_for_same_person` |
+| TRAP-33 | 新版分工写到一半失败 | 先删后插，失败后预约 / 行程 / 接管三张表各自残缺 | 新分工号独立事务，失败整体回滚，旧版三表原样保留 | `app/store.py` `app/modules/m8_duty/service.py` | `tests/test_duty.py::test_failed_write_keeps_previous_version` `tests/test_duty.py::test_atomic_write_rolls_back_within_transaction` |
+| TRAP-34 | 同一场次被两个人先后上报完成 | 后报的覆盖先报的，或两人都记一次 | 取最早一条为事实，后报标 `D_DUPLICATE_RECORD` 留证，不参与分工 | `app/modules/m8_duty/records.py` | `tests/test_duty.py::test_duplicate_and_unknown_records_are_isolated` |
+| TRAP-35 | 中断后续跑，上一版已完成的场次记录里没再出现 | 当成未排场次重新分人，已完成的工作被覆盖 | 上一版已完成的预约连同完成人与时刻原样带过来，只重排剩余场次，版本 +1 | `app/modules/m8_duty/service.py` | `tests/test_duty.py::test_resume_continues_after_processed_sessions` |
 
 ## 对账规则
 
@@ -46,6 +52,17 @@
 - 距离账：每日合计（米，1 位小数）= 已排点位分段之和
 
 四条账在 `GET /plan` 的对账表里逐条显示"平 / 差"，`POST /api/crawl` 返回 `all_balanced`。
+
+## 现场分工账（M8）
+
+- 预约账：预约场次 = 原对接 + 待接管 + 已完成 + 无人接管（预约不随人离场作废）。
+- 行程账：已落人预约 = 个人行程条数（按人按天逐条对得上）。
+- 接管账：接管记录 = 待接管 + 已由他人完成（含现场记录完成但原对接人不是他的场次）。
+- 完成记录账：现场记录 = 有效 + 重复 + 未知引用（续跑时另计「续跑沿用」）。
+- 另有可约展商账：可约展商 = 已约 + 未约（面积型无坐标的展商在这里）。
+- 四本账在 `GET /api/duty` 的 `reconciliation.accounts` 里逐条显示"平 / 差"。
+- 交叉核验：同一人同一天任意两场不重叠（`reconciliation.overlaps` 应为空）、
+  除已完成外的行程都落在本人当天的在场窗口内。
 
 ## 备选方案账（M7）
 
@@ -68,12 +85,18 @@
 | 原子性 | 一次运行先删后插、单事务；失败只写批次与阶段 | `app/store.py:148` |
 | 记忆上限 | 按页读、按页解析，不整站读入 | `app/modules/m1_catalog/paging.py:96` |
 | 备选方案 | 同一批候选三套取舍，权重守恒，跨馆次数有上限 | `GET /api/alternate` 的 `invariant` 与 `comparison` |
+| 整批原子 | 新版分工用新分工号一次事务写入预约 / 行程 / 接管 / 记录；失败回滚保留旧版 | `app/store.py` 的 `save_duty`、`tests/test_duty.py::test_failed_write_keeps_previous_version` |
+| 断点续跑 | 上一版已完成场次原样沿用，只重排剩余，版本 +1，旧版本 409 拒绝 | `POST /api/duty` 的 `mode=resume`、`tests/test_duty.py::test_resume_keeps_completed_and_bumps_version` |
 
 ## 已知不覆盖
 
 - 不做真实网络抓取：`HttpFetcher` 与 `FileFetcher` 同一套解析，但样例站只有 7 页，
   没有反爬、登录、动态渲染的分支。
-- 论坛座位/容量、展商预约时段、同馆并行参观未建模：一人一线，不做多人分工。
+- 论坛座位/容量、同馆并行参观未建模：M4 一人一线；多人分工在 M8，但一天内同一人仍是顺序走，
+  不做同一时刻两人并行覆盖同一展商。
+- M8 的在场窗口按 `config.TEAM` 与本次提交的 `attendance` 计算，不接考勤系统；
+  预约只按原对接人连排生成，不把「哪家更值得等」纳入优化。
+- M8 的接管只保证时间与步行接得上，不重排已完成场次的先后，也不为了接管而改动预约时段。
 - 2-opt 只反转区间，不换点跨天；跨天再分配留给人工在 `/plan` 上取舍。
 - M7 只比三套固定取舍，不做多目标搜索；单向通道表按平面图人工维护，目前只登记 A2 与 B2 之间这一对。
 - 放弃一个站点腾出的时段只按到站最早补位，不试「两个轻点换一个重点」的组合。

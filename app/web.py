@@ -26,6 +26,7 @@ NAV = (
     ("/batches", "批次版本", "batches"),
     ("/export", "行程单", "export"),
     ("/alternate", "备选方案", "alternate"),
+    ("/duty", "现场分工", "duty"),
 )
 STATUS_LABELS = {
     "done": "完成", "failed": "失败", "running": "运行中",

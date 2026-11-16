@@ -11,7 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def test_full_flow_over_http(empty_client: TestClient):
-    """一条完整链路：POST /api/crawl → POST /api/plans → CSV 导出。"""
+    """一条完整链路：POST /api/crawl → POST /api/plans → POST /api/duty → CSV 导出。"""
     crawl = empty_client.post("/api/crawl", json={"source": "all"})
     assert crawl.status_code == 200
     payload = crawl.json()
@@ -33,10 +33,18 @@ def test_full_flow_over_http(empty_client: TestClient):
     assert csv_response.text.startswith("\ufeff")
     assert "步行(米)" in csv_response.text
 
+    duty = empty_client.post("/api/duty", json={"batch_id": payload["batch_id"]})
+    assert duty.status_code == 200
+    duty_body = duty.json()
+    assert duty_body["reconciliation"]["all_balanced"] is True
+    summary = duty_body["summary"]
+    assert summary["appointments"] == (summary["owner"] + summary["takeover_pending"]
+                                       + summary["done"] + summary["uncovered"])
 
-def test_seven_pages_render(client: TestClient):
+
+def test_eight_pages_render(client: TestClient):
     for path in ("/", "/exhibitors", "/conflicts", "/plan", "/batches", "/export",
-                 "/alternate"):
+                 "/alternate", "/duty"):
         response = client.get(path)
         assert response.status_code == 200, path
         assert "boothplan" in response.text
