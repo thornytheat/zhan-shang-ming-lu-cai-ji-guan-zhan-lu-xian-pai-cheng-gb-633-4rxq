@@ -29,7 +29,7 @@ services:
     ports:
       - "19202:80"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1/index.html"]
+      test: ["CMD", "wget", "-Y", "off", "--spider", "-q", "http://127.0.0.1/index.html"]
       interval: 5s
       timeout: 3s
       retries: 10
